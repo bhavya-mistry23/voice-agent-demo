@@ -29,13 +29,6 @@ Python server  ──► LLM Live API  ──► /ws WebSocket       │
                                       injected into call
 ```
 
-## 🚀 Getting started
-
-Pick the implementation you want and follow its README:
-
-- **[gemini-python](./gemini-python/)** — uses Gemini 2.5 Flash with native audio, `uv` for dependency management
-- **[openai-python](./openai-python/)** — uses OpenAI Realtime API with a React client
-
 ## 📋 Prerequisites
 
 - [Recall.ai](https://www.recall.ai/) account and API key
