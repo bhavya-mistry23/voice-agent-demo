@@ -33,8 +33,8 @@ Python server  ──► LLM Live API  ──► /ws WebSocket       │
 
 Pick the implementation you want and follow its README:
 
-- **[gemini-python](./gemini-python/README.md)** — uses Gemini 2.5 Flash with native audio, `uv` for dependency management
-- **[openai-python](./openai-python/README.md)** — uses OpenAI Realtime API with a React client
+- **[gemini-python](./gemini-python/)** — uses Gemini 2.5 Flash with native audio, `uv` for dependency management
+- **[openai-python](./openai-python/)** — uses OpenAI Realtime API with a React client
 
 ## 📋 Prerequisites
 
