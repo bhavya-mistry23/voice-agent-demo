@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.13.3",
     "google-genai>=1.67.0",
+    "numpy>=2.4.3",
     "python-dotenv>=1.2.2",
     "websockets>=16.0",
 ]

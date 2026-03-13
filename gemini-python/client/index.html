@@ -55,40 +55,19 @@
 
 <body>
     <div id="status"><span class="dot" id="dot"></span><span id="label">Connecting...</span></div>
-
     <script>
         (async () => {
             const dot = document.getElementById('dot');
             const label = document.getElementById('label');
+            function setStatus(text, state) { label.textContent = text; dot.className = 'dot ' + (state || ''); }
 
-            function setStatus(text, state) {
-                label.textContent = text;
-                dot.className = 'dot ' + (state || '');
-            }
-
-            // ── 1. Get WebSocket URL from query param ?wss=wss://your-ngrok-url ────────
             const params = new URLSearchParams(window.location.search);
             const wsUrl = params.get('wss');
-            if (!wsUrl) {
-                setStatus('Missing ?wss= param');
-                return;
-            }
+            if (!wsUrl) { setStatus('Missing ?wss= param'); return; }
 
-            // ── 2. Request microphone access ────────────────────────────────────────────
-            let stream;
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            } catch (e) {
-                setStatus('Mic access denied');
-                return;
-            }
-
-            // ── 3. Set up audio context for capture + playback ──────────────────────────
+            // Audio context for PLAYBACK only — no mic capture here
+            // Meeting audio comes to Python server via Recall.ai's real-time audio stream
             const audioCtx = new AudioContext({ sampleRate: 24000 });
-            const source = audioCtx.createMediaStreamSource(stream);
-            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-
-            // Audio playback queue
             let playbackQueue = [];
             let isPlaying = false;
 
@@ -96,72 +75,41 @@
                 if (isPlaying || playbackQueue.length === 0) return;
                 isPlaying = true;
                 const pcm16 = playbackQueue.shift();
-
-                // Convert PCM16 bytes to float32
                 const int16 = new Int16Array(pcm16);
                 const float32 = new Float32Array(int16.length);
                 for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
-
                 const buffer = audioCtx.createBuffer(1, float32.length, 24000);
                 buffer.copyToChannel(float32, 0);
-                const bufferSource = audioCtx.createBufferSource();
-                bufferSource.buffer = buffer;
-                bufferSource.connect(audioCtx.destination);
-                bufferSource.onended = () => { isPlaying = false; playNext(); dot.className = 'dot connected'; };
-                bufferSource.start();
+                const src = audioCtx.createBufferSource();
+                src.buffer = buffer;
+                src.connect(audioCtx.destination);
+                src.onended = () => { isPlaying = false; playNext(); dot.className = 'dot connected'; };
+                src.start();
                 dot.className = 'dot speaking';
             }
 
-            // ── 4. Open WebSocket to Python server ──────────────────────────────────────
             const ws = new WebSocket(wsUrl);
-            ws.binaryType = 'arraybuffer';
-
             ws.onopen = () => {
                 setStatus('PM Agent — Live', 'connected');
-
-                // Start streaming mic audio to server
-                source.connect(processor);
-                processor.connect(audioCtx.destination);
-
-                processor.onaudioprocess = (e) => {
-                    if (ws.readyState !== WebSocket.OPEN) return;
-
-                    // Convert float32 mic input → PCM16 → base64
-                    const float32 = e.inputBuffer.getChannelData(0);
-                    const int16 = new Int16Array(float32.length);
-                    for (let i = 0; i < float32.length; i++) {
-                        int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
-                    }
-                    const b64 = btoa(String.fromCharCode(...new Uint8Array(int16.buffer)));
-
-                    ws.send(JSON.stringify({
-                        type: 'input_audio_buffer.append',
-                        audio: b64
-                    }));
-                };
+                // Resume audio context on user gesture (browser requirement)
+                if (audioCtx.state === 'suspended') audioCtx.resume();
             };
 
             ws.onmessage = (event) => {
                 try {
                     const msg = JSON.parse(event.data);
-
                     if (msg.type === 'response.audio.delta' && msg.delta) {
-                        // Decode base64 PCM16 audio from Gemini and queue for playback
                         const binary = atob(msg.delta);
                         const bytes = new Uint8Array(binary.length);
                         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
                         playbackQueue.push(bytes.buffer);
                         playNext();
                     }
-
-                } catch (e) {
-                    console.error('Message parse error:', e);
-                }
+                } catch (e) { console.error('Parse error:', e); }
             };
 
             ws.onclose = () => setStatus('Disconnected', '');
             ws.onerror = (e) => { console.error(e); setStatus('Connection error', ''); };
-
         })();
     </script>
 </body>
