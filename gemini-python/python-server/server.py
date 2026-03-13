@@ -1,11 +1,18 @@
+"""
+PM Voice Agent — Gemini Live API + Recall.ai
+Single port serves both HTTP (index.html) and WebSocket (bot audio bridge).
+"""
+
 import asyncio
 import json
 import logging
 import os
+import base64
+import pathlib
 from dotenv import load_dotenv
-import websockets
-from websockets.legacy.server import WebSocketServerProtocol, serve
-from websockets.legacy.client import connect
+from aiohttp import web
+from google import genai
+from google.genai import types
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -13,178 +20,176 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
 PORT = int(os.getenv("PORT", 3000))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY must be set in .env file")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY must be set in .env file")
 
+BASE_DIR = pathlib.Path(__file__).parent
+CLIENT_HTML = BASE_DIR.parent / "client" / "index.html"
 
-async def connect_to_openai():
-    """Connect to OpenAI's WebSocket endpoint."""
-    uri = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+SYSTEM_PROMPT = """
+You are an AI representative attending this Microsoft Teams meeting on behalf of the project manager. Make SURE TO CRACK JOKES EVERY TIME.
+"""
 
-    try:
-        ws = await connect(
-            uri,
-            extra_headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-                "OpenAI-Beta": "realtime=v1",
-            },
-            subprotocols=["realtime"],
+LIVE_CONFIG = types.LiveConnectConfig(
+    response_modalities=["AUDIO"],
+    system_instruction=types.Content(
+        parts=[types.Part(text=SYSTEM_PROMPT)],
+        role="user",
+    ),
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Charon")
         )
-        logger.info("Successfully connected to OpenAI")
+    ),
+)
 
-        response = await ws.recv()
-        try:
-            event = json.loads(response)
-            if event.get("type") != "session.created":
-                raise Exception(f"Expected session.created, got {event.get('type')}")
-            logger.info("Received session.created response")
 
-            update_session = {
-                "type": "session.update",
-                "session": {
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "modalities": ["text", "audio"],
-                    "voice": "alloy",
-                },
-            }
-            await ws.send(json.dumps(update_session))
-            logger.info("Sent session.create message")
+async def handle_http(request):
+    if not CLIENT_HTML.exists():
+        return web.Response(text=f"index.html not found at {CLIENT_HTML}", status=404)
+    return web.FileResponse(CLIENT_HTML)
 
-            return (
-                ws,
-                event,
+
+class PMVoiceAgent:
+    def __init__(self, ws_send, ws_iter):
+        self._send = ws_send
+        self._iter = ws_iter
+        self.client = genai.Client(api_key=GEMINI_API_KEY)
+
+    async def run(self):
+        logger.info("Opening Gemini Live session...")
+        async with self.client.aio.live.connect(
+            model=MODEL, config=LIVE_CONFIG
+        ) as session:
+            logger.info("Gemini Live session open")
+
+            # Kick Gemini immediately — introduce itself with a joke
+            await session.send_client_content(
+                turns=types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            text="Please introduce yourself to the meeting with a joke."
+                        )
+                    ],
+                ),
+                turn_complete=True,
             )
-        except json.JSONDecodeError:
-            raise Exception(f"Invalid JSON response from OpenAI: {response}")
+            logger.info("Sent greeting to Gemini")
 
-    except Exception as e:
-        logger.error(f"Failed to connect to OpenAI: {str(e)}")
-        raise
+            await asyncio.gather(
+                self._inbound(session),
+                self._outbound(session),
+            )
 
-
-class WebSocketRelay:
-    def __init__(self):
-        """Initialize the WebSocket relay server."""
-        self.connections = {}
-        self.message_queues = {}
-
-    async def handle_browser_connection(
-        self, websocket: WebSocketServerProtocol, path: str
-    ):
-        """Handle a connection from the browser."""
-        base_path = path.split("?")[0]
-        if base_path != "/":
-            logger.error(f"Invalid path: {path}")
-            await websocket.close(1008, "Invalid path")
-            return
-
-        logger.info(f"Browser connected from {websocket.remote_address}")
-        self.message_queues[websocket] = []
-        openai_ws = None
-
+    async def _inbound(self, session):
+        """Meeting audio → Gemini"""
         try:
-            # Connect to OpenAI
-            openai_ws, session_created = await connect_to_openai()
-            self.connections[websocket] = openai_ws
-
-            logger.info("Connected to OpenAI successfully!")
-
-            await websocket.send(json.dumps(session_created))
-            logger.info("Forwarded session.created to browser")
-
-            while self.message_queues[websocket]:
-                message = self.message_queues[websocket].pop(0)
+            async for raw in self._iter:
                 try:
-                    event = json.loads(message)
-                    logger.info(f'Relaying "{event.get("type")}" to OpenAI')
-                    await openai_ws.send(message)
-                except json.JSONDecodeError:
-                    logger.error(f"Invalid JSON from browser: {message}")
-
-            async def handle_browser_messages():
-                try:
-                    while True:
-                        message = await websocket.recv()
-                        try:
-                            event = json.loads(message)
-                            logger.info(f'Relaying "{event.get("type")}" to OpenAI')
-                            await openai_ws.send(message)
-                        except json.JSONDecodeError:
-                            logger.error(f"Invalid JSON from browser: {message}")
-                except websockets.exceptions.ConnectionClosed as e:
-                    logger.info(
-                        f"Browser connection closed normally: code={e.code}, reason={e.reason}"
-                    )
-                    raise
-
-            async def handle_openai_messages():
-                try:
-                    while True:
-                        message = await openai_ws.recv()
-                        try:
-                            event = json.loads(message)
-                            logger.info(
-                                f'Relaying "{event.get("type")}" from OpenAI: {message}'
+                    msg = json.loads(raw)
+                    t = msg.get("type", "")
+                    if t == "input_audio_buffer.append":
+                        b64 = msg.get("audio", "")
+                        if b64:
+                            await session.send_realtime_input(
+                                media=types.Blob(
+                                    data=base64.b64decode(b64),
+                                    mime_type="audio/pcm;rate=24000",
+                                )
                             )
-                            await websocket.send(message)
-                        except json.JSONDecodeError:
-                            logger.error(f"Invalid JSON from OpenAI: {message}")
-                except websockets.exceptions.ConnectionClosed as e:
-                    logger.info(
-                        f"OpenAI connection closed normally: code={e.code}, reason={e.reason}"
+                    elif t == "conversation.item.create":
+                        for part in msg.get("item", {}).get("content", []):
+                            if part.get("type") == "input_text" and part.get("text"):
+                                await session.send_client_content(
+                                    turns=types.Content(
+                                        role="user",
+                                        parts=[types.Part(text=part["text"])],
+                                    ),
+                                    turn_complete=True,
+                                )
+                except Exception as e:
+                    logger.error(f"Inbound error: {e}")
+        except Exception:
+            logger.info("Inbound stream ended")
+
+    async def _outbound(self, session):
+        """Gemini audio → meeting"""
+        try:
+            async for response in session.receive():
+                if response.data:
+                    logger.info(f"Sending audio chunk: {len(response.data)} bytes")
+                    await self._send(
+                        json.dumps(
+                            {
+                                "type": "response.audio.delta",
+                                "delta": base64.b64encode(response.data).decode(),
+                            }
+                        )
                     )
-                    raise
-
-            try:
-                await asyncio.gather(
-                    handle_browser_messages(), handle_openai_messages()
-                )
-            except websockets.exceptions.ConnectionClosed:
-                logger.info("One of the connections closed, cleaning up")
-
+                if response.text:
+                    logger.info(f"Gemini text: {response.text}")
+                if hasattr(response, "server_content") and response.server_content:
+                    if getattr(response.server_content, "turn_complete", False):
+                        logger.info("Gemini turn complete")
+                        await self._send(json.dumps({"type": "response.audio.done"}))
         except Exception as e:
-            logger.error(f"Error handling connection: {str(e)}")
-            if not websocket.closed:
-                await websocket.close(1011, str(e))
-        finally:
-            if websocket in self.connections:
-                if openai_ws and not openai_ws.closed:
-                    await openai_ws.close(1000, "Normal closure")
-                del self.connections[websocket]
-            if websocket in self.message_queues:
-                del self.message_queues[websocket]
-            if not websocket.closed:
-                await websocket.close(1000, "Normal closure")
-
-    async def serve(self):
-        """Start the WebSocket relay server."""
-        async with serve(
-            self.handle_browser_connection,
-            "0.0.0.0",
-            PORT,
-            ping_interval=20,
-            ping_timeout=20,
-            subprotocols=["realtime"],
-        ):
-            logger.info(f"WebSocket relay server started on ws://0.0.0.0:{PORT}")
-            await asyncio.Future()
+            logger.error(f"Outbound error: {e}")
 
 
-def main():
-    """Main entry point for the WebSocket relay server."""
-    relay = WebSocketRelay()
+async def handle_ws(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    logger.info(f"WebSocket connected from {request.remote}")
+
+    async def sender(data):
+        if not ws.closed:
+            await ws.send_str(data)
+
+    async def iterator():
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                yield msg.data
+            elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
+                break
+
+    agent = PMVoiceAgent(ws_send=sender, ws_iter=iterator())
     try:
-        asyncio.run(relay.serve())
-    except KeyboardInterrupt:
-        logger.info("Server shutdown requested")
+        await agent.run()
+    except Exception as e:
+        logger.error(f"Agent error: {e}")
     finally:
-        logger.info("Server shutdown complete")
+        if not ws.closed:
+            await ws.close()
+        logger.info("WebSocket cleaned up")
+    return ws
+
+
+async def main():
+    app = web.Application()
+    app.router.add_get("/", handle_http)
+    app.router.add_get("/ws", handle_ws)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+
+    logger.info(f"PM Voice Agent on http://0.0.0.0:{PORT}")
+    logger.info("  GET /    → serves index.html")
+    logger.info("  GET /ws  → WebSocket bridge to Gemini")
+    logger.info(f"Model: {MODEL}")
+    logger.info("Ready.")
+    await asyncio.Future()
 
 
 if __name__ == "__main__":
-    main() 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Shutting down")
