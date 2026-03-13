@@ -1,4 +1,4 @@
-# 🤖 PM Voice Agent
+# 🤖 Voice Agent
 
 A real-time AI voice agent that joins **Microsoft Teams meetings** on behalf of a project manager. Built with **Gemini 2.5 Flash Live API** and **Recall.ai**, it listens to meeting audio, generates intelligent spoken responses, and injects the AI voice back into the call — live.
 
@@ -32,7 +32,7 @@ A real-time AI voice agent that joins **Microsoft Teams meetings** on behalf of 
 │       └─> GET /ws      → streams AI audio to browser        │
 │                    │                                        │
 │                    ▼                                        │
-│   [PMVoiceAgent]                                            │
+│   [VoiceAgent]                                            │
 │       └─> send_audio()    → forwards PCM to Gemini          │
 │       └─> attach_sender() → links WebSocket to browser      │
 │       └─> auto-reconnect  → re-opens Gemini on drop         │
@@ -78,7 +78,7 @@ A real-time AI voice agent that joins **Microsoft Teams meetings** on behalf of 
 
              │
              ▼
-[PMVoiceAgent.send_audio()]
+[VoiceAgent.send_audio()]
   └─> Decodes base64 → raw PCM bytes
   └─> Guards against sending if Gemini session is reconnecting
   └─> Forwards audio to Gemini Live at 16kHz
@@ -92,7 +92,7 @@ A real-time AI voice agent that joins **Microsoft Teams meetings** on behalf of 
 
              │
              ▼
-[PMVoiceAgent receives Gemini response]
+[VoiceAgent receives Gemini response]
   └─> Base64-encodes each audio chunk
   └─> Sends JSON: { "type": "response.audio.delta", "delta": "..." }
   └─> Sends over WS /ws to the connected browser page
@@ -109,7 +109,7 @@ A real-time AI voice agent that joins **Microsoft Teams meetings** on behalf of 
              ▼
 [Recall.ai captures browser audio]
   └─> Injects it back into the Teams call as the agent's voice
-  └─> Participants hear the PM Agent speaking
+  └─> Participants hear the Agent speaking
 ```
 
 ## 📁 Project Structure
@@ -121,7 +121,7 @@ gemini-python/
 │   └── index.html          # Browser audio playback page (opened by Recall.ai)
 │
 ├── python-server/
-│   ├── server.py           # aiohttp server + PMVoiceAgent + Gemini Live session
+│   ├── server.py           # aiohttp server + VoiceAgent + Gemini Live session
 │   ├── .env                # API keys (not committed)
 │   └── .gitignore
 │
@@ -136,7 +136,7 @@ gemini-python/
 
 | Component | File | Role |
 |-----------|------|------|
-| `PMVoiceAgent` | `server.py` | Core class — manages Gemini session, audio I/O, auto-reconnect |
+| `VoiceAgent` | `server.py` | Core class — manages Gemini session, audio I/O, auto-reconnect |
 | `handle_audio` | `server.py` | WebSocket endpoint — receives raw PCM from Recall.ai |
 | `handle_ws` | `server.py` | WebSocket endpoint — streams AI audio to the browser |
 | `handle_http` | `server.py` | HTTP endpoint — serves `index.html` to Recall.ai |
@@ -205,7 +205,7 @@ curl --location 'https://ap-northeast-1.recall.ai/api/v1/bot/' \
 --header 'content-type: application/json' \
 --data '{
     "meeting_url": "https://teams.microsoft.com/meet/<YOUR_MEETING_ID>?p=<YOUR_MEETING_PASSCODE>",
-    "bot_name": "PM Agent",
+    "bot_name": "Agent",
     "variant": {"microsoft_teams": "web_4_core"},
     "recording_config": {
       "audio_mixed_raw": {},

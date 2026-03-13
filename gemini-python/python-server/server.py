@@ -1,5 +1,5 @@
 """
-PM Voice Agent — Gemini Live API + Recall.ai
+Voice Agent — Gemini Live API + Recall.ai
 """
 
 import time
@@ -49,7 +49,7 @@ LIVE_CONFIG = types.LiveConnectConfig(
 )
 
 
-class PMVoiceAgent:
+class VoiceAgent:
     def __init__(self):
         self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.gemini_session = None
@@ -196,7 +196,7 @@ class PMVoiceAgent:
 
 
 # ── single global agent ──
-agent = PMVoiceAgent()
+agent = VoiceAgent()
 
 
 # ── HTTP ──
@@ -286,7 +286,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-    logger.info(f"PM Voice Agent on http://0.0.0.0:{PORT}")
+    logger.info(f" Voice Agent on http://0.0.0.0:{PORT}")
     logger.info("  GET /       → index.html")
     logger.info("  GET /ws     → Gemini audio output to bot")
     logger.info("  GET /audio  → Recall.ai raw audio input from meeting")
